@@ -7,6 +7,7 @@ layout(location = 3) in vec3  a_normal;
 layout(location = 4) in float a_skylight;
 layout(location = 5) in float a_blocklight;
 layout(location = 6) in float a_ao;
+layout(location = 7) in float a_flags;
 
 uniform mat4 u_mvp;
 uniform vec3 u_chunk_origin;
@@ -19,6 +20,7 @@ out float v_blocklight;
 out float v_ao;
 out float v_world_y;
 out vec3  v_world_pos;
+out float v_flags;
 
 void main() {
     vec3 world_pos = u_chunk_origin + a_pos;
@@ -31,4 +33,5 @@ void main() {
     v_ao           = a_ao;
     v_world_y      = world_pos.y;
     v_world_pos    = world_pos;
+    v_flags        = a_flags;
 }

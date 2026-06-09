@@ -8,6 +8,7 @@ in float v_blocklight;
 in float v_ao;
 in float v_world_y;
 in vec3  v_world_pos;
+in float v_flags;
 
 uniform sampler2D u_atlas;
 uniform vec3  u_sun_dir;
@@ -42,11 +43,7 @@ uniform float u_fog_density;
 
 out vec4 frag_color;
 
-const float ATLAS_TILES = 5.0;
-
-bool is_emissive_tile(vec2 tile) {
-    return tile.x > 3.5 && tile.y < 0.5;
-}
+const float ATLAS_TILES = 16.0;
 
 float sun_occlusion_factor(float ndotl, vec3 n) {
     if (u_shadow_enabled == 0) return 0.0;
@@ -69,8 +66,14 @@ float sun_occlusion_factor(float ndotl, vec3 n) {
 }
 
 vec3 apply_fog(vec3 col) {
-    if (u_eye_in_water != 0) return col;
     float fdist = length(v_world_pos - u_eye);
+    if (u_eye_in_water != 0) {
+        float dens  = clamp(0.07 + u_eye_water_depth * 0.007, 0.07, 0.26);
+        float extra = (v_world_y >= u_sea_level) ? 3.2 : 1.0;
+        float fog   = clamp(1.0 - exp(-fdist * dens * extra), 0.0, 1.0);
+        vec3  deep  = vec3(0.03, 0.11, 0.24);
+        return mix(col, deep, fog);
+    }
     float fog   = clamp(1.0 - exp(-fdist * u_fog_density), 0.0, 1.0);
     vec3  vdir  = normalize(v_world_pos - u_eye);
     float sun_amt = max(dot(vdir, normalize(u_sun_dir)), 0.0);
@@ -85,16 +88,13 @@ void main() {
     vec2 atlas_uv = (v_tile + local) / ATLAS_TILES;
     vec4 tex = texture(u_atlas, atlas_uv);
     if (tex.a < 0.5) discard;
+
+    int flags = int(v_flags + 0.5);
     float alpha = tex.a;
+    if ((flags & 2) != 0)      alpha = 0.7;
+    else if ((flags & 4) != 0) alpha = 0.45;
 
-    if (v_tile.x < 0.5 && v_tile.y > 0.5 && v_tile.y < 1.5) {
-        alpha = 0.7;
-    }
-    if (v_tile.x < 0.5 && v_tile.y > 3.5 && v_tile.y < 4.5) {
-        alpha = 0.45;
-    }
-
-    if (is_emissive_tile(v_tile)) {
+    if ((flags & 1) != 0) {
         frag_color = vec4(apply_fog(tex.rgb), alpha);
         return;
     }
@@ -144,6 +144,8 @@ void main() {
         } else {
             view_depth = u_eye_water_depth + (u_sea_level - v_world_y);
         }
+    } else if (v_world_y < u_sea_level) {
+        view_depth = (u_sea_level - v_world_y) * 0.85;
     }
     if (view_depth > 0.0) {
         float water_factor = exp(-view_depth * 0.24);

@@ -10,6 +10,7 @@ typedef struct {
     float skylight;
     float blocklight;
     float ao;
+    float flags;
 } mesh_vertex_t;
 
 typedef struct {

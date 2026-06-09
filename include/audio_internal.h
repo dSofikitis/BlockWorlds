@@ -5,7 +5,7 @@
 
 #define AUDIO_SR          48000
 #define AUDIO_VOICES      16
-#define AUDIO_SOUND_COUNT 19
+#define AUDIO_SOUND_COUNT 39
 
 typedef struct {
     float *samples;
@@ -16,6 +16,8 @@ typedef struct {
     const float *samples;
     int    frames;
     int    pos;
+    float  rate;
+    float  fpos;
     float  gain;
     int    active;
 } voice_t;
@@ -26,6 +28,7 @@ struct audio_s {
     int             have_mutex;
     void           *backend;
     float           master_gain;
+    float           category_gain[AUDIO_CAT_COUNT];
     sound_t         sounds[AUDIO_SOUND_COUNT];
     voice_t         voices[AUDIO_VOICES];
 };

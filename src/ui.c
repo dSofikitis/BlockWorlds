@@ -33,6 +33,7 @@ struct ui_s {
 
     GLuint icon_prog;
     GLint  icon_aspect_loc, icon_atlas_loc, icon_tint_loc;
+    GLuint block_atlas;
 
     GLuint blur_prog;
     GLint  blur_texel_loc, blur_darken_loc, blur_scene_loc;
@@ -358,11 +359,14 @@ void ui_draw_rect(const ui_t *u, float x, float y, float w, float h,
     glEnable(GL_DEPTH_TEST);
 }
 
-void ui_draw_atlas_icon(const ui_t *u, int tx, int ty,
-                        float x, float y, float size, float aspect) {
-    float n  = (float)ATLAS_TILES;
-    float u0 = (float)tx / n,       u1 = (float)(tx + 1) / n;
-    float vt = (float)(ty + 1) / n, vb = (float)ty / n;
+void ui_set_block_atlas(ui_t *u, unsigned int tex) { u->block_atlas = tex; }
+
+void ui_draw_atlas_icon_tinted(const ui_t *u, unsigned int tex, int tiles_per_row, int tx, int ty,
+                               float x, float y, float size,
+                               float r, float g, float b, float a, float aspect) {
+    float n  = (float)tiles_per_row;
+    float u0 = (float)tx / n,   u1 = (float)(tx + 1) / n;
+    float vt = (float)ty / n,   vb = (float)(ty + 1) / n;
     float v[24] = {
         x,        y,        u0, vt,
         x + size, y,        u1, vt,
@@ -375,14 +379,26 @@ void ui_draw_atlas_icon(const ui_t *u, int tx, int ty,
     glUseProgram(u->icon_prog);
     glUniform1f(u->icon_aspect_loc, aspect);
     glUniform1i(u->icon_atlas_loc, 0);
-    glUniform4f(u->icon_tint_loc, 1.0f, 1.0f, 1.0f, 1.0f);
+    glUniform4f(u->icon_tint_loc, r, g, b, a);
     glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
     glBindVertexArray(u->quad_vao);
     glBindBuffer(GL_ARRAY_BUFFER, u->quad_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)sizeof v, v);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
     glEnable(GL_DEPTH_TEST);
+}
+
+void ui_draw_atlas_icon_n(const ui_t *u, unsigned int tex, int tiles_per_row, int tx, int ty,
+                          float x, float y, float size, float aspect) {
+    ui_draw_atlas_icon_tinted(u, tex, tiles_per_row, tx, ty, x, y, size,
+                              1.0f, 1.0f, 1.0f, 1.0f, aspect);
+}
+
+void ui_draw_atlas_icon(const ui_t *u, int tx, int ty,
+                        float x, float y, float size, float aspect) {
+    ui_draw_atlas_icon_n(u, u->block_atlas, ATLAS_TILES, tx, ty, x, y, size, aspect);
 }
 
 void ui_capture_screen(ui_t *u, int w, int h) {

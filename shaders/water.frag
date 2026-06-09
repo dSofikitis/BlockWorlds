@@ -2,8 +2,13 @@
 
 in vec3 v_world_pos;
 in vec4 v_clip;
+in float v_flags;
 
 uniform sampler2D u_reflection;
+uniform sampler2D u_scene_depth;
+uniform vec2  u_screen;
+uniform float u_near;
+uniform float u_far;
 uniform vec3  u_eye;
 uniform float u_time;
 uniform vec3  u_sun_dir;
@@ -12,6 +17,10 @@ uniform vec3  u_fog_color;
 uniform float u_fog_density;
 
 out vec4 frag_color;
+
+float lin_depth(float z) {
+    return (2.0 * u_near * u_far) / (u_far + u_near - (z * 2.0 - 1.0) * (u_far - u_near));
+}
 
 void main() {
     vec2 p = v_world_pos.xz;
@@ -33,7 +42,15 @@ void main() {
     float fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(view_dir, n), 0.0), 5.0);
     fresnel = clamp(fresnel, 0.0, 1.0);
 
-    vec3 water_col = vec3(0.04, 0.13, 0.22);
+    vec2 suv = gl_FragCoord.xy / u_screen;
+    float floor_z = texture(u_scene_depth, suv).r;
+    float thickness = max(0.0, lin_depth(floor_z) - lin_depth(gl_FragCoord.z));
+    float depthF = clamp(thickness / 14.0, 0.0, 1.0);
+    depthF = depthF * depthF * (3.0 - 2.0 * depthF);
+
+    vec3 shallow_col = vec3(0.18, 0.42, 0.46);
+    vec3 deep_col    = vec3(0.03, 0.11, 0.20);
+    vec3 water_col = mix(shallow_col, deep_col, depthF);
     vec3 col = mix(water_col, reflection, fresnel);
 
     vec3 half_vec = normalize(view_dir + normalize(u_sun_dir));
@@ -46,6 +63,7 @@ void main() {
     vec3 fog_col = mix(u_fog_color, vec3(1.0, 0.86, 0.62), pow(sun_amt, 8.0) * u_sun_strength);
     col = mix(col, fog_col, fog);
 
-    float alpha = mix(0.62, 0.96, fresnel);
+    float base_alpha = mix(0.30, 0.93, depthF);
+    float alpha = clamp(base_alpha + fresnel * 0.25, 0.0, 0.97);
     frag_color = vec4(col, alpha);
 }

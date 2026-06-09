@@ -2,22 +2,65 @@
 
 ## ToDo
 
+- Dedicated online server binary (LAN ships host-as-server; the `net` module and protocol are transport/role/address-agnostic, so a standalone server is a drop-in)
+- Optional UDP fast-path for position updates (TCP is used throughout today; fine for LAN, generalizes to online)
+- Sync physics-driven world changes (falling sand, water spread, crop growth) — player block edits already sync
+
+- A full **Nether dimension** (its original goal — a natural source for rare brewing ingredients — is now met via mob drops; the dimension itself remains a larger milestone)
+
+---
+
+## 0.1.0 (Beta) — Survival, a lifelike overworld, mob skins, projectiles, brewing, and LAN multiplayer
+
+### Worldgen & QoL
+
+- Reworked terrain: **domain-warped continentalness** floors and shrinks the oceans (no more endless seas — typically ~60–85% land, ocean basins capped only a few blocks below sea level), an **erosion** layer drives gentle plains vs. mountainous regions, and a 6-octave detail layer adds relief. Verified across seeds: land 58–88%, deepest ocean ≤ 11 blocks
+- **Distance-weighted biome height blending** eases biome borders instead of stepping; winding **domain-warped rivers** carve shallow channels across the land, with sand **beaches** along every shore
+- **Shallow water**: a lighter `BLOCK_WATER_SHALLOW` rims coasts and river beds and fades into the deep blue (tinted in the water shader via a per-vertex flag). Generation now caches height/biome per column, so the richer pipeline stays fast
+- **Item-like utility blocks**: the torch now renders as a slim cross-billboard (not a cube), and the anvil, chest and brewing stand render as shrunk box models with proper per-face textures (chest lid/front, anvil worktop) instead of full blocks — and no longer occlude neighbouring block faces
+- On-screen version on the title screen and window title; this is **0.1.0 beta**
+
 ### Gameplay
 
-- Survival mode: health, hunger, damage, armor
-- New "block types": items, like torch and tools
-- Block-break timing + tool tiers (wood / stone / iron / diamond)
-- Dropped items and pickup
-- Crafting table + forge (craft & reapir tools and armor) + furnace (shape-match recipes) + anvil (just to upgrade tools and armor)
-- Mobs: passive + hostile, simple-state-machine AI, spawn rules, spawn rate in per-world settings (add to .bw)
-- Combat (PvP & PvE with realistic HP reductions)
-- Particle effects (block break, footstep dust, water splash)
-- Fix the hideous sounds that walking and water dip / get out actions have
+- **Mob box-model textures**: procedurally-painted per-species skins (pig, cow, chicken, sheep, zombie, skeleton, creeper, spider) UV-mapped per cuboid face — the iconic faces on the front — replacing the flat-shaded coloured cuboids; lit and hurt-flashed as before, with a flat-colour fallback if the atlas is unavailable
+- **Real arrow projectiles**: skeletons loose physical arrows with gravity, swept voxel collision (they stick where they land) and continuous hit detection vs. the player and other mobs — replacing the old hitscan-plus-visual (which also double-dipped damage)
+- **Brewing & potions** on the timed status-effect system: a brewing-stand block-entity (blaze-powder fuel + an ingredient over three bottles), water bottles filled from water, nether wart → awkward base, and a full potion set (regeneration, swiftness, strength, healing, poison, fire resistance, water breathing, harming, slowness, weakness, resistance) with **amplifiers**; fermented spider eye corrupts potions and gunpowder makes **throwable splash potions** that burst an area effect
+- **Hunger-driven sprint gating** (no sprint at 6 hunger or below); **sleep skips to a per-world configurable dawn** instead of a hardcoded time, tunable with `/dawn`
+- **Player archery**: hold a bow and right-click to loose an arrow (creative fires freely; survival consumes an arrow from the inventory and wears the bow), reusing the same physical-arrow projectile as skeletons
+- **Splash potion lingering clouds**: a thrown harmful/beneficial splash now leaves an `EK_CLOUD` area-effect cloud that re-applies its effect (and chips harmful potions' damage) over several seconds before dissipating
+- **Tipped arrows**: craft Poison/Harming arrows from an arrow + the matching potion; on impact they apply the potion effect to the player or extra damage to mobs
+- **Potion strength upgrades**: brewing **glowstone** raises a potion's amplifier and **redstone** extends its duration (packed into a per-bottle strength tier and threaded through drinking, splashing, and the lingering cloud) — redstone is now an item
+- **Natural ingredient sources**: hostile mobs occasionally drop the rarer brewing reagents (zombies → nether wart/redstone, skeletons → blaze rod/redstone, creepers → ghast tear/magma cream, spiders → pufferfish/glistering melon), so they no longer have to be crafted
 
 ### Multiplayer
 
-- LAN multiplayer
-- Per-user permission to restrict commands ("cheats") (saved to per-world settings)
+- **LAN multiplayer**: a cross-platform sockets layer (BSD sockets / Winsock, `-lws2_32`) and a threaded `net` module; **host-as-server** with an authoritative host, join-by-IP, and a select-based I/O thread feeding a mutex-guarded message queue (no game logic on the net thread). The protocol and API are role/address-agnostic, so an online server is a later drop-in. Players see each other as humanoid avatars, share block edits and chat, and the host streams its existing edits to joiners and keeps time authoritative
+- **Per-player persistence** keyed by username (inventory, health, position, respawn) saved with the world
+- **Per-user command/"cheat" permissions** saved to per-world settings, managed with `/permission <user> <command|all> <on|off>`
+
+### Engine
+
+- Mob/avatar renderer gained a per-vertex UV + front-face attribute and a procedural mob-skin atlas; new water-shader shallow tint; a shared `block_is_water` helper threaded through physics, raycast, particles, falling blocks and gameplay
+- Save format **v8** (per-world dawn time, per-user permissions, per-player records) with v5/v6/v7 migration; new `net` module (`net.c`/`net.h`) and Makefile socket linkage
+- New commands: `/dawn`, `/permission`
+
+### Survival foundations (a.k.a. versions 0.0.2 Alpha - 0.0.9 Alpha)
+
+- Survival core: 20-tps tick driving health (10 hearts), hunger + saturation + exhaustion, drowning/air, natural regen, starvation (difficulty-floored), fall damage, a death screen, and bed/world respawn. Full HUD — hearts, hunger, armour, air bubbles, an XP bar with level, status-effect icons, and a damage flash. New `survival.h`/`player.c` survival API; creative players are invulnerable
+- New `registry` module: one property table for **35 blocks + ~70 items** (ids, render kind, hardness, tool/tier gates, drops, fuel, smelting, food, durability, armour) feeding mesher, inventory, drops, crafting, and HUD. `item_id` widened to 16-bit; inventory slots carry `{id, count, durability}`
+- Tools & tiers: wood / stone / iron / diamond pickaxe-axe-shovel-sword-hoe + bow, tier-gated drops (cobble from stone, iron needs stone+, diamond needs iron+), per-tool mining speed, durability with an on-HUD wear bar, and ore-mining XP
+- Items & blocks: torch (emissive cutout), crafting table, furnace, forge, anvil, chest, bed (foot+head), farmland, sapling, wheat, cobblestone, wool, iron/diamond/coal blocks; materials (sticks, ingots, coal, charcoal, flint, leather, feather, bone, string, gunpowder, gems, seeds, arrows, bowl); food (apple, bread, raw/cooked meats) with timed eating + crumb particles
+- Crafting: a 2×2 hand grid and a 3×3 crafting table with a shaped/shapeless bounding-box matcher (+ mirror), a cursor-carried-stack inventory UI with armour slots, an exhaustive recipe set (planks→sticks→table→tools/armour bootstrap proven), a furnace (input/fuel/output, burn + smelt-progress bars, banked smelting XP), a forge (advanced craft + material repair), and an anvil (XP-cost repair/combine). Stations are block-entities persisted in the save
+- Mobs: all eight species — pig, cow, chicken, sheep, zombie, skeleton, creeper, spider — as jointed **box models** (head/body/legs/arms) with a walk animation, lit per block-light; a simple-state-machine AI (idle/wander/flee/chase/attack/strafe/fuse), light-and-night-gated spawning in dark surfaces and caves, herd spawns for passives, distance/time despawn, and a per-world spawn-rate × difficulty cap
+- Combat (PvE): player melee raycast vs mob AABBs with sword damage, crits, and knockback; mob contact attacks, skeleton ranged shots, and creeper fuse→explosion (radius player damage capped + difficulty-scaled, gibs blocks only when `mobGriefing` is on). Vanilla-style armour reduction, i-frames, armour durability loss on hit, and a PvP gate for future LAN
+- Dropped items & XP orbs: mob/break drops spawn as physical entities with bob + pickup; XP orbs drift to the player and grant levels; overflow from full inventories / broken chests drops to the world instead of vanishing
+- Particles: a billboard `particle` system (block-break shards, footstep + landing dust, water splash, eat crumbs, hit/crit, mob-death poof, explosion smoke/flash, XP sparkle, torch flame) sampling a new fx atlas, lit and depth-correct
+- Audio: fixed the harsh walking and water-dip/surface sounds (retuned synth + ±10% per-trigger pitch jitter); added ~19 effects — hurt, eat/drink/burp, level-up, XP pickup, anvil, bow, arrow, explosion, creeper fuse, door, and per-category mob voices
+- Per-world settings (`.bw`): difficulty (peaceful/easy/normal/hard), mob spawning, spawn rate, keep-inventory, natural regen, PvP, fall damage, hunger, daylight cycle, mob griefing, and smelt multiplier — chosen on the Create screen (difficulty selector) and tunable live via `/difficulty` and `/gamerule`; world spawn + respawn points persisted
+- Extras: XP & leveling spent at the anvil; beds set respawn and sleep through the night; a timed status-effect system (regeneration, poison, strength, weakness, speed, slowness, resistance, +instant/utility) wired into damage, speed, and food; and sliding achievement/onboarding toasts ("Got Wood", "Crafting", "DIAMONDS!", "Level Up", …) saved per world
+- New commands: `/difficulty`, `/gamerule`, `/effect`, `/xp`, `/heal`, `/kill [mobs]`, `/summon <species>`, and `/give <item> [count]` by item name
+- Engine: render-flags refactor — emissive/translucency/cutout now travel as a per-vertex attribute instead of hard-coded atlas positions, freeing the block atlas to grow 5×5 → 16×16 (plus a 16×16 item atlas and an 8×8 HUD/fx atlas); torches join the block-light flood; a shared swept-AABB voxel physics helper (`physics.c`) for mobs
+- Save format v7: per-world settings, survival stats, durability-aware inventory + armour/offhand, entities, station block-entities, and achievements — with v5/v6 migration. New `craft`, `entity`, `entity_render`, `particle`, `physics`, `toast`, `registry`, `texture_assets` modules; design captured in `docs/gameplay_blueprint.md`
 
 ---
 

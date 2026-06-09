@@ -179,7 +179,7 @@ int falling_active_count(const falling_system_t *s) {
 }
 
 static int is_passable_for_falling(block_t b) {
-    return b == BLOCK_AIR || b == BLOCK_WATER;
+    return b == BLOCK_AIR || block_is_water(b);
 }
 
 int falling_update(falling_system_t *s, world_t *world, float dt) {

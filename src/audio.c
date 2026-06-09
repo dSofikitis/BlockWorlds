@@ -31,6 +31,26 @@ typedef enum {
     SND_BLOCK_LAND,
     SND_HOTBAR,
     SND_HOVER,
+    SND_HURT,
+    SND_EAT,
+    SND_DRINK,
+    SND_BURP,
+    SND_LEVELUP,
+    SND_XP_PICKUP,
+    SND_ANVIL,
+    SND_DOOR,
+    SND_BOW,
+    SND_ARROW_HIT,
+    SND_EXPLOSION,
+    SND_FUSE,
+    SND_MOB_GRUNT,
+    SND_MOB_MOO,
+    SND_MOB_CLUCK,
+    SND_MOB_BAA,
+    SND_MOB_GROAN,
+    SND_MOB_RATTLE,
+    SND_MOB_HISS,
+    SND_RAIN,
     SND_COUNT,
 } sound_id_t;
 
@@ -38,6 +58,18 @@ _Static_assert(SND_COUNT == AUDIO_SOUND_COUNT, "sound count must match audio_int
 
 static float rnd_unit(void) {
     return (float)rand() / (float)RAND_MAX * 2.0f - 1.0f;
+}
+
+static uint32_t s_jitter_lcg = 0x9E3779B9u;
+
+static uint32_t jitter_next(void) {
+    s_jitter_lcg = s_jitter_lcg * 1664525u + 1013904223u;
+    return s_jitter_lcg;
+}
+
+static float jitter_rate(float spread) {
+    float u = (float)(jitter_next() >> 8) / 16777216.0f;
+    return 1.0f + (u * 2.0f - 1.0f) * spread;
 }
 
 static void synth_impact(sound_t *s, float dur, float decay, float lp_alpha,
@@ -182,22 +214,42 @@ static const sound_def_t SOUND_DEFS[SND_COUNT] = {
     { "break_hard.wav", 0.18f, 0.05f, 0.50f,   0.0f, 0.00f, 0.50f },
     { "break_soft.wav", 0.16f, 0.06f, 0.12f,  80.0f, 0.25f, 0.55f },
     { "place.wav",      0.12f, 0.04f, 0.25f, 140.0f, 0.50f, 0.50f },
-    { "step.wav",       0.08f, 0.025f,0.10f,   0.0f, 0.00f, 0.28f },
+    { "step.wav",       0.07f, 0.020f,0.10f,   0.0f, 0.00f, 0.40f },
     { "splash.wav",     0.30f, 0.10f, 0.45f,   0.0f, 0.00f, 0.40f },
-    { "exit_water.wav", 0.20f, 0.07f, 0.40f,   0.0f, 0.00f, 0.34f },
-    { "water_step.wav", 0.13f, 0.045f,0.40f,   0.0f, 0.00f, 0.26f },
+    { "exit_water.wav", 0.28f, 0.12f, 0.30f, 140.0f, 0.10f, 0.50f },
+    { "water_step.wav", 0.11f, 0.050f,0.20f,   0.0f, 0.00f, 0.50f },
     { "jump.wav",       0.10f, 0.05f, 0.18f, 220.0f, 0.20f, 0.35f },
     { "land_soft.wav",  0.12f, 0.045f,0.10f,  70.0f, 0.15f, 0.55f },
     { "land_hard.wav",  0.22f, 0.08f, 0.08f,  55.0f, 0.20f, 0.90f },
     { "swim.wav",       0.22f, 0.08f, 0.50f,   0.0f, 0.00f, 0.30f },
     { "pickup.wav",     0.10f, 0.05f, 0.50f, 700.0f, 0.65f, 0.35f },
     { "ui_click.wav",   0.045f,0.012f,0.70f,   0.0f, 0.00f, 0.45f },
-    { "step_stone.wav", 0.07f, 0.020f,0.40f,   0.0f, 0.00f, 0.30f },
-    { "step_sand.wav",  0.09f, 0.030f,0.06f,   0.0f, 0.00f, 0.24f },
-    { "step_wood.wav",  0.08f, 0.025f,0.25f, 180.0f, 0.18f, 0.30f },
+    { "step_stone.wav", 0.07f, 0.018f,0.40f,   0.0f, 0.00f, 0.42f },
+    { "step_sand.wav",  0.09f, 0.028f,0.06f,   0.0f, 0.00f, 0.35f },
+    { "step_wood.wav",  0.08f, 0.022f,0.25f, 180.0f, 0.15f, 0.42f },
     { "block_land.wav", 0.18f, 0.060f,0.12f,  50.0f, 0.10f, 0.55f },
     { "hotbar.wav",     0.03f, 0.008f,0.85f,   0.0f, 0.00f, 0.30f },
     { "hover.wav",      0.025f,0.006f,0.80f,   0.0f, 0.00f, 0.18f },
+    { "hurt.wav",       0.14f, 0.055f,0.30f, 160.0f, 0.20f, 0.55f },
+    { "eat.wav",        0.10f, 0.030f,0.20f,   0.0f, 0.00f, 0.40f },
+    { "drink.wav",      0.16f, 0.060f,0.30f,  90.0f, 0.12f, 0.45f },
+    { "burp.wav",       0.22f, 0.090f,0.25f,  75.0f, 0.30f, 0.50f },
+    { "levelup.wav",    0.45f, 0.220f,0.10f, 660.0f, 0.85f, 0.55f },
+    { "xp_pickup.wav",  0.06f, 0.020f,0.10f,1180.0f, 0.80f, 0.30f },
+    { "anvil.wav",      0.20f, 0.040f,0.65f, 520.0f, 0.35f, 0.55f },
+    { "door.wav",       0.22f, 0.090f,0.20f, 130.0f, 0.18f, 0.45f },
+    { "bow.wav",        0.18f, 0.070f,0.55f, 240.0f, 0.20f, 0.40f },
+    { "arrow_hit.wav",  0.10f, 0.030f,0.18f,  90.0f, 0.10f, 0.50f },
+    { "explosion.wav",  0.70f, 0.300f,0.06f,  45.0f, 0.18f, 0.95f },
+    { "fuse.wav",       0.60f, 0.500f,0.35f,   0.0f, 0.00f, 0.45f },
+    { "mob_grunt.wav",  0.16f, 0.070f,0.25f, 150.0f, 0.45f, 0.45f },
+    { "mob_moo.wav",    0.45f, 0.220f,0.15f,  95.0f, 0.55f, 0.50f },
+    { "mob_cluck.wav",  0.10f, 0.035f,0.30f, 480.0f, 0.40f, 0.40f },
+    { "mob_baa.wav",    0.35f, 0.160f,0.20f, 320.0f, 0.55f, 0.45f },
+    { "mob_groan.wav",  0.42f, 0.200f,0.18f,  90.0f, 0.50f, 0.50f },
+    { "mob_rattle.wav", 0.22f, 0.045f,0.55f,  60.0f, 0.08f, 0.45f },
+    { "mob_hiss.wav",   0.40f, 0.180f,0.45f,   0.0f, 0.00f, 0.45f },
+    { "rain.wav",       0.55f, 0.40f, 0.60f,   0.0f, 0.00f, 0.30f },
 };
 
 static void build_sounds(sound_t *dest, const char *dir) {
@@ -234,11 +286,25 @@ void audio_mix(struct audio_s *a, float *o, int nframes) {
     for (int v = 0; v < AUDIO_VOICES; v++) {
         voice_t *vc = &a->voices[v];
         if (!vc->active) continue;
-        for (int i = 0; i < nframes; i++) {
-            if (vc->pos >= vc->frames) { vc->active = 0; break; }
-            float smp = vc->samples[vc->pos++] * vc->gain;
-            o[2 * i]     += smp;
-            o[2 * i + 1] += smp;
+        if (vc->rate > 0.0f && vc->rate != 1.0f) {
+            for (int i = 0; i < nframes; i++) {
+                int i0 = (int)vc->fpos;
+                if (i0 >= vc->frames) { vc->active = 0; break; }
+                float frac = vc->fpos - (float)i0;
+                float a0 = vc->samples[i0];
+                float a1 = (i0 + 1 < vc->frames) ? vc->samples[i0 + 1] : a0;
+                float smp = (a0 + (a1 - a0) * frac) * vc->gain;
+                o[2 * i]     += smp;
+                o[2 * i + 1] += smp;
+                vc->fpos += vc->rate;
+            }
+        } else {
+            for (int i = 0; i < nframes; i++) {
+                if (vc->pos >= vc->frames) { vc->active = 0; break; }
+                float smp = vc->samples[vc->pos++] * vc->gain;
+                o[2 * i]     += smp;
+                o[2 * i + 1] += smp;
+            }
         }
     }
     pthread_mutex_unlock(&a->mutex);
@@ -249,10 +315,12 @@ void audio_mix(struct audio_s *a, float *o, int nframes) {
     }
 }
 
-static void audio_trigger(audio_t *a, sound_id_t id, float gain) {
+static void audio_trigger_pitched(audio_t *a, sound_id_t id, float gain, float rate, int cat) {
     if (!a || !a->have_unit) return;
     sound_t *s = &a->sounds[id];
     if (!s->samples || s->frames == 0) return;
+    if (rate <= 0.0f) rate = 1.0f;
+    float cg = (cat >= 0 && cat < AUDIO_CAT_COUNT) ? a->category_gain[cat] : 1.0f;
     pthread_mutex_lock(&a->mutex);
     int slot = -1;
     for (int v = 0; v < AUDIO_VOICES; v++) {
@@ -262,15 +330,22 @@ static void audio_trigger(audio_t *a, sound_id_t id, float gain) {
     a->voices[slot].samples = s->samples;
     a->voices[slot].frames  = s->frames;
     a->voices[slot].pos     = 0;
-    a->voices[slot].gain    = gain * a->master_gain;
+    a->voices[slot].rate    = rate;
+    a->voices[slot].fpos    = 0.0f;
+    a->voices[slot].gain    = gain * a->master_gain * cg;
     a->voices[slot].active  = 1;
     pthread_mutex_unlock(&a->mutex);
+}
+
+static void audio_trigger(audio_t *a, sound_id_t id, float gain, int cat) {
+    audio_trigger_pitched(a, id, gain, 1.0f, cat);
 }
 
 audio_t *audio_create(const char *dir) {
     audio_t *a = calloc(1, sizeof *a);
     if (!a) return NULL;
     a->master_gain = AUDIO_MASTER_GAIN;
+    for (int i = 0; i < AUDIO_CAT_COUNT; i++) a->category_gain[i] = 1.0f;
     build_sounds(a->sounds, dir);
 
     if (pthread_mutex_init(&a->mutex, NULL) != 0) {
@@ -331,26 +406,80 @@ static sound_id_t step_sound_for_block(block_t b) {
 }
 
 void audio_play_break(audio_t *a, block_t b) {
-    audio_trigger(a, block_is_hard(b) ? SND_BREAK_HARD : SND_BREAK_SOFT, 1.0f);
+    audio_trigger(a, block_is_hard(b) ? SND_BREAK_HARD : SND_BREAK_SOFT, 1.0f, AUDIO_CAT_ENV);
 }
-void audio_play_place(audio_t *a, block_t b) { (void)b; audio_trigger(a, SND_PLACE, 1.0f); }
-void audio_play_step(audio_t *a, block_t ground) { audio_trigger(a, step_sound_for_block(ground), 1.0f); }
-void audio_play_water_step(audio_t *a)       { audio_trigger(a, SND_WATER_STEP, 1.0f); }
-void audio_play_splash(audio_t *a)           { audio_trigger(a, SND_SPLASH, 1.0f); }
-void audio_play_exit_water(audio_t *a)       { audio_trigger(a, SND_EXIT_WATER, 1.0f); }
-void audio_play_jump(audio_t *a)             { audio_trigger(a, SND_JUMP, 1.0f); }
-void audio_play_swim(audio_t *a)             { audio_trigger(a, SND_SWIM, 1.0f); }
-void audio_play_pickup(audio_t *a)           { audio_trigger(a, SND_PICKUP, 1.0f); }
-void audio_play_ui_click(audio_t *a)         { audio_trigger(a, SND_UI_CLICK, 1.0f); }
-void audio_play_block_land(audio_t *a)       { audio_trigger(a, SND_BLOCK_LAND, 1.0f); }
-void audio_play_hotbar(audio_t *a)           { audio_trigger(a, SND_HOTBAR, 1.0f); }
-void audio_play_hover(audio_t *a)            { audio_trigger(a, SND_HOVER, 1.0f); }
+void audio_play_place(audio_t *a, block_t b) { (void)b; audio_trigger(a, SND_PLACE, 1.0f, AUDIO_CAT_ENV); }
+void audio_play_step(audio_t *a, block_t ground) {
+    audio_trigger_pitched(a, step_sound_for_block(ground), 1.0f, jitter_rate(0.10f), AUDIO_CAT_PLAYER);
+}
+void audio_play_water_step(audio_t *a)       { audio_trigger_pitched(a, SND_WATER_STEP, 1.0f, jitter_rate(0.10f), AUDIO_CAT_PLAYER); }
+void audio_play_splash(audio_t *a)           { audio_trigger(a, SND_SPLASH, 1.0f, AUDIO_CAT_ENV); }
+void audio_play_exit_water(audio_t *a)       { audio_trigger_pitched(a, SND_EXIT_WATER, 1.0f, jitter_rate(0.08f), AUDIO_CAT_ENV); }
+void audio_play_jump(audio_t *a)             { audio_trigger(a, SND_JUMP, 1.0f, AUDIO_CAT_PLAYER); }
+void audio_play_swim(audio_t *a)             { audio_trigger_pitched(a, SND_SWIM, 1.0f, jitter_rate(0.10f), AUDIO_CAT_PLAYER); }
+void audio_play_pickup(audio_t *a)           { audio_trigger(a, SND_PICKUP, 1.0f, AUDIO_CAT_PLAYER); }
+void audio_play_ui_click(audio_t *a)         { audio_trigger(a, SND_UI_CLICK, 1.0f, AUDIO_CAT_UI); }
+void audio_play_block_land(audio_t *a)       { audio_trigger(a, SND_BLOCK_LAND, 1.0f, AUDIO_CAT_ENV); }
+void audio_play_hotbar(audio_t *a)           { audio_trigger(a, SND_HOTBAR, 1.0f, AUDIO_CAT_UI); }
+void audio_play_hover(audio_t *a)            { audio_trigger(a, SND_HOVER, 1.0f, AUDIO_CAT_UI); }
+void audio_play_item_break(audio_t *a)       { audio_trigger_pitched(a, SND_BREAK_HARD, 0.8f, jitter_rate(0.06f), AUDIO_CAT_ENV); }
+
+void audio_play_hurt(audio_t *a)      { audio_trigger_pitched(a, SND_HURT, 1.0f, jitter_rate(0.08f), AUDIO_CAT_PLAYER); }
+void audio_play_eat(audio_t *a)       { audio_trigger_pitched(a, SND_EAT, 1.0f, jitter_rate(0.12f), AUDIO_CAT_PLAYER); }
+void audio_play_drink(audio_t *a)     { audio_trigger_pitched(a, SND_DRINK, 1.0f, jitter_rate(0.08f), AUDIO_CAT_PLAYER); }
+void audio_play_burp(audio_t *a)      { audio_trigger_pitched(a, SND_BURP, 1.0f, jitter_rate(0.10f), AUDIO_CAT_PLAYER); }
+void audio_play_levelup(audio_t *a)   { audio_trigger(a, SND_LEVELUP, 1.0f, AUDIO_CAT_PLAYER); }
+void audio_play_xp_pickup(audio_t *a) { audio_trigger_pitched(a, SND_XP_PICKUP, 0.8f, jitter_rate(0.10f), AUDIO_CAT_PLAYER); }
+void audio_play_anvil(audio_t *a)     { audio_trigger_pitched(a, SND_ANVIL, 1.0f, jitter_rate(0.05f), AUDIO_CAT_ENV); }
+void audio_play_door(audio_t *a, int open) {
+    float base = open ? 1.05f : 0.95f;
+    audio_trigger_pitched(a, SND_DOOR, 1.0f, base * jitter_rate(0.04f), AUDIO_CAT_ENV);
+}
+void audio_play_bow(audio_t *a)       { audio_trigger_pitched(a, SND_BOW, 1.0f, jitter_rate(0.06f), AUDIO_CAT_ENV); }
+void audio_play_arrow_hit(audio_t *a) { audio_trigger_pitched(a, SND_ARROW_HIT, 1.0f, jitter_rate(0.08f), AUDIO_CAT_ENV); }
+void audio_play_explosion(audio_t *a) { audio_trigger_pitched(a, SND_EXPLOSION, 1.0f, jitter_rate(0.05f), AUDIO_CAT_ENV); }
+void audio_play_fuse(audio_t *a)      { audio_trigger(a, SND_FUSE, 1.0f, AUDIO_CAT_ENV); }
+void audio_play_rain(audio_t *a, float intensity) {
+    if (intensity <= 0.0f) return;
+    if (intensity > 1.0f) intensity = 1.0f;
+    audio_trigger_pitched(a, SND_RAIN, 0.5f + 0.5f * intensity, jitter_rate(0.12f), AUDIO_CAT_ENV);
+}
+
+static sound_id_t mob_sound_for(int category, float *base_rate) {
+    switch (category) {
+        case AUDIO_MOB_PIG:      *base_rate = 1.00f; return SND_MOB_GRUNT;
+        case AUDIO_MOB_COW:      *base_rate = 1.00f; return SND_MOB_MOO;
+        case AUDIO_MOB_CHICKEN:  *base_rate = 1.00f; return SND_MOB_CLUCK;
+        case AUDIO_MOB_SHEEP:    *base_rate = 1.00f; return SND_MOB_BAA;
+        case AUDIO_MOB_ZOMBIE:   *base_rate = 1.00f; return SND_MOB_GROAN;
+        case AUDIO_MOB_SKELETON: *base_rate = 1.00f; return SND_MOB_RATTLE;
+        case AUDIO_MOB_CREEPER:  *base_rate = 1.00f; return SND_MOB_HISS;
+        case AUDIO_MOB_SPIDER:   *base_rate = 1.35f; return SND_MOB_HISS;
+        default:                 *base_rate = 1.00f; return SND_MOB_GRUNT;
+    }
+}
+
+void audio_play_mob_idle(audio_t *a, int category) {
+    float base = 1.0f;
+    sound_id_t id = mob_sound_for(category, &base);
+    audio_trigger_pitched(a, id, 0.7f, base * jitter_rate(0.10f), AUDIO_CAT_MOBS);
+}
+void audio_play_mob_hurt(audio_t *a, int category) {
+    float base = 1.0f;
+    sound_id_t id = mob_sound_for(category, &base);
+    audio_trigger_pitched(a, id, 1.0f, base * 1.18f * jitter_rate(0.06f), AUDIO_CAT_MOBS);
+}
+void audio_play_mob_death(audio_t *a, int category) {
+    float base = 1.0f;
+    sound_id_t id = mob_sound_for(category, &base);
+    audio_trigger_pitched(a, id, 1.0f, base * 0.80f * jitter_rate(0.06f), AUDIO_CAT_MOBS);
+}
 
 void audio_play_land(audio_t *a, float fall_speed) {
     if (fall_speed < AUDIO_LAND_MIN_SPEED) return;
-    if (fall_speed >= AUDIO_LAND_HARD_SPEED) { audio_trigger(a, SND_LAND_HARD, 1.0f); return; }
+    if (fall_speed >= AUDIO_LAND_HARD_SPEED) { audio_trigger(a, SND_LAND_HARD, 1.0f, AUDIO_CAT_ENV); return; }
     float t = (fall_speed - AUDIO_LAND_MIN_SPEED) / (AUDIO_LAND_HARD_SPEED - AUDIO_LAND_MIN_SPEED);
-    audio_trigger(a, SND_LAND_SOFT, 0.55f + 0.45f * t);
+    audio_trigger(a, SND_LAND_SOFT, 0.55f + 0.45f * t, AUDIO_CAT_ENV);
 }
 
 void audio_set_volume(audio_t *a, float v) {
@@ -358,4 +487,10 @@ void audio_set_volume(audio_t *a, float v) {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     a->master_gain = v;
+}
+void audio_set_category_volume(audio_t *a, int category, float v) {
+    if (!a || category < 0 || category >= AUDIO_CAT_COUNT) return;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    a->category_gain[category] = v;
 }

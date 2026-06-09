@@ -21,5 +21,12 @@ void ui_draw_rect(const ui_t *u, float x, float y, float w, float h,
 void ui_draw_atlas_icon(const ui_t *u, int tx, int ty,
                         float x, float y, float size, float aspect);
 
+void ui_draw_atlas_icon_n(const ui_t *u, unsigned int tex, int tiles_per_row, int tx, int ty,
+                          float x, float y, float size, float aspect);
+void ui_draw_atlas_icon_tinted(const ui_t *u, unsigned int tex, int tiles_per_row, int tx, int ty,
+                               float x, float y, float size,
+                               float r, float g, float b, float a, float aspect);
+void ui_set_block_atlas(ui_t *u, unsigned int tex);
+
 void ui_capture_screen(ui_t *u, int w, int h);
 void ui_draw_blur(const ui_t *u, float darken);

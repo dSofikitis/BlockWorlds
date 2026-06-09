@@ -16,9 +16,9 @@ void main() {
     float wave = 0.97 + 0.05 * sin(cuv.y * 1.6 + u_time * 0.35)
                        + 0.03 * sin(cuv.x * 1.1 - u_time * 0.25);
 
-    vec3  tint  = vec3(0.06, 0.24, 0.58) * wave;
-    tint = mix(tint, vec3(0.02, 0.06, 0.18), vignette);
+    vec3  tint  = vec3(0.08, 0.27, 0.60) * wave;
+    tint = mix(tint, vec3(0.03, 0.09, 0.22), vignette);
 
-    float alpha = (0.76 + 0.17 * vignette) * u_fade;
+    float alpha = (0.50 + 0.16 * vignette) * u_fade;
     frag_color = vec4(tint, alpha);
 }

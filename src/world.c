@@ -4,11 +4,13 @@
 #include "mesh.h"
 #include "chunk_mesher.h"
 #include "falling.h"
+#include "registry.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -27,6 +29,13 @@
 #define SALT_TREE       0x07E5EE15u
 #define SALT_CAVE       0xCAFEC0DEu
 #define SALT_VEIN       0x0EE0EE05u
+#define SALT_GRASS      0x6A55C0DEu
+#define SALT_ROCK       0x70CC0BBu
+#define SALT_CONT       0xC0117A11u
+#define SALT_EROSION    0xE5051077u
+#define SALT_RIVER      0x5217E125u
+#define SALT_WARP_X     0x3A1FC0DEu
+#define SALT_WARP_Z     0x9E3779B1u
 
 #define WORLD_BUCKETS  4096
 
@@ -72,6 +81,12 @@ struct world_s {
     char     name[WORLD_NAME_MAX];
     int      gamemode;
     int      allow_commands;
+    uint8_t  difficulty, mob_spawning, keep_inventory, natural_regen, pvp, fall_damage,
+             hunger_enabled, daylight_cycle, mob_griefing, weather_state;
+    float    spawn_rate, smelt_mult;
+    float    dawn_time;
+    user_perm_t users[WORLD_MAX_USERS];
+    int32_t  spawn_x, spawn_y, spawn_z;
     int      radius;
     int      center_cx, center_cz;
     int      initialized;
@@ -281,9 +296,11 @@ static int large_noise(uint32_t seed, int wx, int wz, uint32_t salt, int cell_si
 biome_t world_biome_at(uint32_t seed, int wx, int wz) {
     int t = large_noise(seed, wx, wz, SALT_TEMP,  96);
     int h = large_noise(seed, wx, wz, SALT_HUMID, 96);
-    if (t < 80)  return BIOME_SNOW;
-    if (t > 180) return BIOME_DESERT;
-    if (h > 160) return BIOME_FOREST;
+    if (t < 66)  return BIOME_SNOW;
+    if (t > 196) return (h > 150) ? BIOME_JUNGLE : BIOME_DESERT;
+    if (h > 206) return BIOME_SWAMP;
+    if (h > 150) return BIOME_FOREST;
+    if (h < 52)  return BIOME_ROCKY;
     return BIOME_PLAINS;
 }
 
@@ -292,62 +309,121 @@ typedef struct {
     block_t subsurface;
     int     height_offset;
     int     tree_density;
+    block_t leaf;
+    int     tree_kind;
+    int     grass_density;
 } biome_def_t;
 
 static const biome_def_t BIOMES[] = {
-    [BIOME_PLAINS] = {BLOCK_GRASS, BLOCK_DIRT,  0,   3},
-    [BIOME_FOREST] = {BLOCK_GRASS, BLOCK_DIRT,  4,  30},
-    [BIOME_DESERT] = {BLOCK_SAND,  BLOCK_SAND,  2,   0},
-    [BIOME_SNOW]   = {BLOCK_SNOW,  BLOCK_DIRT, 14,   2},
+    [BIOME_PLAINS] = {BLOCK_GRASS, BLOCK_DIRT,  0,   3, BLOCK_LEAVES,        0, 55},
+    [BIOME_FOREST] = {BLOCK_GRASS, BLOCK_DIRT,  4,  34, BLOCK_LEAVES,        0, 40},
+    [BIOME_DESERT] = {BLOCK_SAND,  BLOCK_SAND,  2,   3, BLOCK_LEAVES_ACACIA, 2,  0},
+    [BIOME_SNOW]   = {BLOCK_SNOW,  BLOCK_DIRT, 12,   9, BLOCK_LEAVES_PINE,   1, 12},
+    [BIOME_SWAMP]  = {BLOCK_GRASS, BLOCK_DIRT, -1,  20, BLOCK_LEAVES_SWAMP,  3, 60},
+    [BIOME_JUNGLE] = {BLOCK_GRASS, BLOCK_DIRT,  3,  64, BLOCK_LEAVES_JUNGLE, 4, 75},
+    [BIOME_ROCKY]  = {BLOCK_STONE, BLOCK_STONE, 20,   0, BLOCK_LEAVES,        0, 30},
 };
 
-static int corner_height_base(uint32_t seed, int wx, int wz) {
-    uint32_t h = hash2(seed + SALT_HEIGHT, wx, wz);
-    int f1 = (int)((h >>  0) & 0x7u);
-    int f2 = (int)((h >>  8) & 0x7u);
-    int f3 = (int)((h >> 16) & 0x7u);
-    int f4 = (int)((h >> 24) & 0x7u);
-    return 10 + f1 + f2 + f3 + f4;
+static float smooth01(float t) { return t * t * (3.0f - 2.0f * t); }
+
+static float vnoise(uint32_t seed, uint32_t salt, int wx, int wz, int cell) {
+    int x0 = floor_div(wx, cell) * cell;
+    int z0 = floor_div(wz, cell) * cell;
+    int x1 = x0 + cell, z1 = z0 + cell;
+    float tx = smooth01((float)(wx - x0) / (float)cell);
+    float tz = smooth01((float)(wz - z0) / (float)cell);
+    const float inv = 1.0f / 65535.0f;
+    float h00 = (float)(hash2(seed + salt, x0, z0) & 0xFFFFu) * inv;
+    float h10 = (float)(hash2(seed + salt, x1, z0) & 0xFFFFu) * inv;
+    float h01 = (float)(hash2(seed + salt, x0, z1) & 0xFFFFu) * inv;
+    float h11 = (float)(hash2(seed + salt, x1, z1) & 0xFFFFu) * inv;
+    float a = h00 + (h10 - h00) * tx;
+    float b = h01 + (h11 - h01) * tx;
+    return a + (b - a) * tz;
 }
 
-static int base_height(uint32_t seed, int wx, int wz) {
-    int cx_low  = (wx >> CHUNK_BITS) << CHUNK_BITS;
-    int cz_low  = (wz >> CHUNK_BITS) << CHUNK_BITS;
-    int cx_high = cx_low + CHUNK_DIM;
-    int cz_high = cz_low + CHUNK_DIM;
+static float clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
 
-    int h00 = corner_height_base(seed, cx_low,  cz_low);
-    int h10 = corner_height_base(seed, cx_high, cz_low);
-    int h01 = corner_height_base(seed, cx_low,  cz_high);
-    int h11 = corner_height_base(seed, cx_high, cz_high);
+static float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
-    float tx = (float)(wx - cx_low) / (float)CHUNK_DIM;
-    float tz = (float)(wz - cz_low) / (float)CHUNK_DIM;
-    float h0 = (1.0f - tx) * (float)h00 + tx * (float)h10;
-    float h1 = (1.0f - tx) * (float)h01 + tx * (float)h11;
-    return (int)((1.0f - tz) * h0 + tz * h1);
+static void domain_warp(uint32_t seed, int wx, int wz, float amp, int cell,
+                        int *ox, int *oz) {
+    float dx = (vnoise(seed, SALT_WARP_X, wx, wz, cell) - 0.5f) * 2.0f * amp;
+    float dz = (vnoise(seed, SALT_WARP_Z, wx, wz, cell) - 0.5f) * 2.0f * amp;
+    *ox = wx + (int)dx;
+    *oz = wz + (int)dz;
+}
+
+static float height_fbm(uint32_t seed, int wx, int wz) {
+    float total = 0.0f, amp = 1.0f, norm = 0.0f;
+    int cell = 320;
+    for (int o = 0; o < 5; o++) {
+        total += vnoise(seed, SALT_HEIGHT + (uint32_t)o * 1311u, wx, wz, cell) * amp;
+        norm  += amp;
+        amp   *= 0.5f;
+        if (cell > 24) cell /= 2;
+    }
+    return total / norm;
+}
+
+static float landmass(uint32_t seed, int sx, int sz) {
+    float c1 = vnoise(seed, SALT_CONT,         sx, sz, 560);
+    float c2 = vnoise(seed, SALT_CONT + 5557u, sx, sz, 256);
+    return c1 * 0.7f + c2 * 0.3f;
+}
+
+static float river_value(uint32_t seed, int wx, int wz) {
+    int sx, sz;
+    domain_warp(seed, wx, wz, 34.0f, 200, &sx, &sz);
+    float n = vnoise(seed, SALT_RIVER, sx, sz, 360);
+    return 1.0f - fabsf(n - 0.5f) * 2.0f;
 }
 
 static int blended_biome_offset(uint32_t seed, int wx, int wz) {
-    int o = 0;
-    for (int dz = -8; dz <= 8; dz += 8) {
-        for (int dx = -8; dx <= 8; dx += 8) {
-            o += BIOMES[world_biome_at(seed, wx + dx, wz + dz)].height_offset;
+    float sum = 0.0f, wsum = 0.0f;
+    for (int dz = -12; dz <= 12; dz += 6) {
+        for (int dx = -12; dx <= 12; dx += 6) {
+            float dist = (float)(abs(dx) + abs(dz));
+            float wgt  = 1.0f / (1.0f + dist * 0.12f);
+            sum  += (float)BIOMES[world_biome_at(seed, wx + dx, wz + dz)].height_offset * wgt;
+            wsum += wgt;
         }
     }
-    return o / 9;
+    return (int)(sum / wsum + (sum < 0.0f ? -0.5f : 0.5f));
 }
 
 int world_height_at(uint32_t seed, int wx, int wz) {
-    int b = base_height(seed, wx, wz);
-    int o = blended_biome_offset(seed, wx, wz);
-    int h = b + o;
+    int sx, sz;
+    domain_warp(seed, wx, wz, 40.0f, 384, &sx, &sz);
+
+    float cont    = landmass(seed, sx, sz);
+    float land    = smooth01(clampf((cont - 0.30f) / 0.16f, 0.0f, 1.0f));
+    float detail  = height_fbm(seed, sx, sz);
+    float erosion = vnoise(seed, SALT_EROSION, sx, sz, 512);
+
+    float ocean_floor = (float)SEA_LEVEL - 9.0f + detail * 6.0f;
+    float land_amp    = 8.0f + erosion * 34.0f;
+    float land_h      = (float)SEA_LEVEL + 2.0f + smooth01(detail) * land_amp;
+    int   h = (int)(ocean_floor + (land_h - ocean_floor) * land + 0.5f);
+
+    h += (int)((float)blended_biome_offset(seed, wx, wz) * land);
+
+    {
+        float rv = river_value(seed, wx, wz);
+        if (land > 0.55f && rv > 0.86f && h > SEA_LEVEL - 2) {
+            float t = smooth01(clampf((rv - 0.86f) / 0.14f, 0.0f, 1.0f));
+            float lowland = smooth01(clampf((float)(SEA_LEVEL + 8 - h) / 8.0f, 0.0f, 1.0f));
+            t *= lowland;
+            h = (int)lerpf((float)h, (float)(SEA_LEVEL - 2), t);
+        }
+    }
+
     if (h < 1) h = 1;
     if (h >= WORLD_HEIGHT) h = WORLD_HEIGHT - 1;
     return h;
 }
-
-static float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
 static int cave_noise(uint32_t seed, int wx, int wy, int wz) {
     int cell = 24;
@@ -386,26 +462,34 @@ static int is_cave(uint32_t seed, int wx, int wy, int wz) {
     return cave_noise(seed, wx, wy, wz) > 190;
 }
 
-static block_t gen_block(uint32_t seed, int wx, int wy, int wz) {
+static block_t gen_block_col(uint32_t seed, int wx, int wy, int wz, int h, biome_t bm) {
     if (wy == 0) return BLOCK_DEEPSTONE;
 
-    int h = world_height_at(seed, wx, wz);
-    biome_t bm = world_biome_at(seed, wx, wz);
-
     if (wy <= h) {
+        int underwater = (h < SEA_LEVEL);
+        int beach = (h <= SEA_LEVEL + 2);
+        int sandy = underwater ||
+                    (beach && bm != BIOME_SNOW && bm != BIOME_SWAMP && bm != BIOME_ROCKY);
         if (wy == h) {
-            if (h < SEA_LEVEL && bm != BIOME_DESERT) return BLOCK_SAND;
+            if (sandy) return BLOCK_SAND;
+            if (bm == BIOME_ROCKY) {
+                if (!underwater && (hash2(seed + SALT_ROCK, wx, wz) & 0xFFu) < 90) return BLOCK_GRASS;
+                return BLOCK_STONE;
+            }
             return BIOMES[bm].surface;
         }
         if (wy >= h - 3) {
-            if (h < SEA_LEVEL && bm != BIOME_DESERT) return BLOCK_SAND;
+            if (sandy) return BLOCK_SAND;
             return BIOMES[bm].subsurface;
         }
         if (is_cave(seed, wx, wy, wz)) return BLOCK_AIR;
         return BLOCK_STONE;
     }
 
-    if (wy <= SEA_LEVEL) return BLOCK_WATER;
+    if (wy <= SEA_LEVEL) {
+        if (wy == SEA_LEVEL && bm == BIOME_SNOW && h < SEA_LEVEL - 1) return BLOCK_ICE;
+        return ((SEA_LEVEL - h) <= 3) ? BLOCK_WATER_SHALLOW : BLOCK_WATER;
+    }
     return BLOCK_AIR;
 }
 
@@ -423,6 +507,95 @@ void world_set_gamemode(world_t *w, int gamemode) { w->gamemode = gamemode; }
 const char *world_name(const world_t *w)  { return w->name; }
 int         world_gamemode(const world_t *w) { return w->gamemode; }
 int         world_allow_commands(const world_t *w) { return w->allow_commands; }
+
+void world_set_difficulty(world_t *w, int d) { if (d < 0) d = 0; if (d > 3) d = 3; w->difficulty = (uint8_t)d; }
+int  world_difficulty(const world_t *w)      { return w->difficulty; }
+void world_set_spawn_rate(world_t *w, float r) { if (r < 0.0f) r = 0.0f; if (r > 8.0f) r = 8.0f; w->spawn_rate = r; }
+float world_spawn_rate(const world_t *w)     { return w->spawn_rate; }
+void world_set_dawn_time(world_t *w, float t) { if (t < 0.0f) t = 0.0f; if (t >= 1.0f) t = 0.999f; w->dawn_time = t; }
+float world_dawn_time(const world_t *w)      { return w->dawn_time; }
+
+static int user_find(const world_t *w, const char *user) {
+    for (int i = 0; i < WORLD_MAX_USERS; i++)
+        if (w->users[i].used && strncmp(w->users[i].name, user, USER_NAME_MAX) == 0) return i;
+    return -1;
+}
+void world_perm_set(world_t *w, const char *user, int cmd_idx, int on) {
+    if (!user || !user[0]) return;
+    int idx = user_find(w, user);
+    if (idx < 0) {
+        for (int i = 0; i < WORLD_MAX_USERS; i++) if (!w->users[i].used) { idx = i; break; }
+        if (idx < 0) return;
+        memset(&w->users[idx], 0, sizeof w->users[idx]);
+        for (int k = 0; k < USER_NAME_MAX - 1 && user[k]; k++) w->users[idx].name[k] = user[k];
+        w->users[idx].used = 1;
+        w->users[idx].allow_mask = w->allow_commands ? 0xFFFFFFFFu : 0u;
+    }
+    if (cmd_idx < 0) {
+        w->users[idx].allow_mask = on ? 0xFFFFFFFFu : 0u;
+    } else if (cmd_idx < 32) {
+        if (on) w->users[idx].allow_mask |= (1u << cmd_idx);
+        else    w->users[idx].allow_mask &= ~(1u << cmd_idx);
+    }
+}
+int world_perm_allowed(const world_t *w, const char *user, int cmd_idx) {
+    int idx = (user && user[0]) ? user_find(w, user) : -1;
+    if (idx < 0) return w->allow_commands;
+    if (cmd_idx < 0 || cmd_idx >= 32) return w->users[idx].allow_mask != 0u;
+    return (int)((w->users[idx].allow_mask >> cmd_idx) & 1u);
+}
+void world_perm_clear(world_t *w, const char *user) {
+    int idx = user_find(w, user);
+    if (idx >= 0) memset(&w->users[idx], 0, sizeof w->users[idx]);
+}
+void world_set_smelt_mult(world_t *w, float m) { if (m < 0.05f) m = 0.05f; if (m > 20.0f) m = 20.0f; w->smelt_mult = m; }
+float world_smelt_mult(const world_t *w)     { return w->smelt_mult; }
+void world_set_spawn(world_t *w, int x, int y, int z) { w->spawn_x = x; w->spawn_y = y; w->spawn_z = z; }
+void world_get_spawn(const world_t *w, int *x, int *y, int *z) { if (x) *x = w->spawn_x; if (y) *y = w->spawn_y; if (z) *z = w->spawn_z; }
+int  world_keep_inventory(const world_t *w)  { return w->keep_inventory; }
+int  world_natural_regen(const world_t *w)   { return w->natural_regen; }
+int  world_pvp(const world_t *w)             { return w->pvp; }
+int  world_fall_damage(const world_t *w)     { return w->fall_damage; }
+int  world_hunger(const world_t *w)          { return w->hunger_enabled; }
+int  world_mob_spawning(const world_t *w)    { return w->mob_spawning; }
+int  world_mob_griefing(const world_t *w)    { return w->mob_griefing; }
+int  world_daylight_cycle(const world_t *w)  { return w->daylight_cycle; }
+void world_set_weather_state(world_t *w, int s) { w->weather_state = (uint8_t)s; }
+int  world_weather_state(const world_t *w)   { return w->weather_state; }
+
+void world_set_gamerule(world_t *w, gamerule_t g, int on) {
+    uint8_t v = on ? 1 : 0;
+    switch (g) {
+        case GR_MOB_SPAWNING:   w->mob_spawning   = v; break;
+        case GR_KEEP_INVENTORY: w->keep_inventory = v; break;
+        case GR_NATURAL_REGEN:  w->natural_regen  = v; break;
+        case GR_PVP:            w->pvp            = v; break;
+        case GR_FALL_DAMAGE:    w->fall_damage    = v; break;
+        case GR_HUNGER:         w->hunger_enabled = v; break;
+        case GR_DAYLIGHT_CYCLE: w->daylight_cycle = v; break;
+        case GR_MOB_GRIEFING:   w->mob_griefing   = v; break;
+        default: break;
+    }
+}
+int world_gamerule(const world_t *w, gamerule_t g) {
+    switch (g) {
+        case GR_MOB_SPAWNING:   return w->mob_spawning;
+        case GR_KEEP_INVENTORY: return w->keep_inventory;
+        case GR_NATURAL_REGEN:  return w->natural_regen;
+        case GR_PVP:            return w->pvp;
+        case GR_FALL_DAMAGE:    return w->fall_damage;
+        case GR_HUNGER:         return w->hunger_enabled;
+        case GR_DAYLIGHT_CYCLE: return w->daylight_cycle;
+        case GR_MOB_GRIEFING:   return w->mob_griefing;
+        default: return 0;
+    }
+}
+void world_init_settings(world_t *w, int difficulty, int mob_spawning, float spawn_rate, int keep_inventory) {
+    world_set_difficulty(w, difficulty);
+    w->mob_spawning   = mob_spawning ? 1 : 0;
+    world_set_spawn_rate(w, spawn_rate);
+    w->keep_inventory = keep_inventory ? 1 : 0;
+}
 
 void  world_set_sun_dir(world_t *w, float x, float y, float z) {
     atomic_store_explicit(&w->sun_dx, x, memory_order_relaxed);
@@ -602,11 +775,11 @@ static void cascade_sand(world_t *w, int x, int y, int z) {
 }
 
 static int has_water_source(const world_t *w, int x, int y, int z) {
-    if (world_get_block(w, x, y + 1, z) == BLOCK_WATER) return 1;
-    if (world_get_block(w, x + 1, y, z) == BLOCK_WATER) return 1;
-    if (world_get_block(w, x - 1, y, z) == BLOCK_WATER) return 1;
-    if (world_get_block(w, x, y, z + 1) == BLOCK_WATER) return 1;
-    if (world_get_block(w, x, y, z - 1) == BLOCK_WATER) return 1;
+    if (block_is_water(world_get_block(w, x, y + 1, z))) return 1;
+    if (block_is_water(world_get_block(w, x + 1, y, z))) return 1;
+    if (block_is_water(world_get_block(w, x - 1, y, z))) return 1;
+    if (block_is_water(world_get_block(w, x, y, z + 1))) return 1;
+    if (block_is_water(world_get_block(w, x, y, z - 1))) return 1;
     return 0;
 }
 
@@ -619,7 +792,14 @@ static void water_enqueue(world_t *w, int x, int y, int z) {
 }
 
 static void water_fill(world_t *w, int x, int y, int z) {
-    world_set_block_gen(w, x, y, z, BLOCK_WATER);
+    block_t b = BLOCK_WATER;
+    if (world_get_block(w, x + 1, y, z) == BLOCK_WATER_SHALLOW ||
+        world_get_block(w, x - 1, y, z) == BLOCK_WATER_SHALLOW ||
+        world_get_block(w, x, y, z + 1) == BLOCK_WATER_SHALLOW ||
+        world_get_block(w, x, y, z - 1) == BLOCK_WATER_SHALLOW ||
+        world_get_block(w, x, y + 1, z) == BLOCK_WATER_SHALLOW)
+        b = BLOCK_WATER_SHALLOW;
+    world_set_block_gen(w, x, y, z, b);
     mark_dirty_around(w, x, y, z);
 }
 
@@ -699,7 +879,7 @@ void world_set_block(world_t *w, int x, int y, int z, block_t b) {
 #define LIGHTVOL_RADIUS 10
 
 static int lightvol_passes(block_t b) {
-    return b == BLOCK_AIR || b == BLOCK_WATER || b == BLOCK_GLASS || b == BLOCK_LEAVES;
+    return block_render_class(b) != RCLASS_SOLID;
 }
 
 void world_build_light_volume(world_t *w, int ox, int oy, int oz, int dim, uint8_t *out) {
@@ -746,7 +926,7 @@ void world_build_light_volume(world_t *w, int ox, int oy, int oz, int dim, uint8
 
     int qh = 0, qt = 0;
     for (int i = 0; i < vol; i++)
-        if (blk[i] == BLOCK_GLOWSTONE) { lvl[i] = LIGHTVOL_RADIUS; q[qt++] = i; }
+        if (block_light_emission(blk[i]) > 0) { lvl[i] = LIGHTVOL_RADIUS; q[qt++] = i; }
     if (qt == 0) return;
 
     static const int OFF[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
@@ -779,6 +959,20 @@ void world_build_light_volume(world_t *w, int ox, int oy, int oz, int dim, uint8
     }
 }
 
+int world_block_light_at(const world_t *w, int x, int y, int z) {
+    const int R = 7;
+    int best = 0;
+    for (int dy = -R; dy <= R; dy++)
+        for (int dz = -R; dz <= R; dz++)
+            for (int dx = -R; dx <= R; dx++) {
+                int e = block_light_emission(world_get_block(w, x + dx, y + dy, z + dz));
+                if (e <= 0) continue;
+                int lv = e - (abs(dx) + abs(dy) + abs(dz));
+                if (lv > best) best = lv;
+            }
+    return best > 15 ? 15 : best;
+}
+
 static void apply_deltas_to_chunk(const world_t *w, chunk_node_t *n) {
     int x0 = n->cx * CHUNK_DIM, x1 = x0 + CHUNK_DIM;
     int y0 = n->cy * CHUNK_DIM, y1 = y0 + CHUNK_DIM;
@@ -798,11 +992,19 @@ static void gen_chunk_into(uint32_t seed, int cx, int cy, int cz, chunk_t *out) 
     int origin_x = cx * CHUNK_DIM;
     int origin_y = cy * CHUNK_DIM;
     int origin_z = cz * CHUNK_DIM;
+    int     colh[CHUNK_DIM][CHUNK_DIM];
+    biome_t colb[CHUNK_DIM][CHUNK_DIM];
+    for (int z = 0; z < CHUNK_DIM; z++)
+        for (int x = 0; x < CHUNK_DIM; x++) {
+            colh[z][x] = world_height_at(seed, origin_x + x, origin_z + z);
+            colb[z][x] = world_biome_at(seed, origin_x + x, origin_z + z);
+        }
     for (int y = 0; y < CHUNK_DIM; y++)
         for (int z = 0; z < CHUNK_DIM; z++)
             for (int x = 0; x < CHUNK_DIM; x++)
                 chunk_set(out, x, y, z,
-                          gen_block(seed, origin_x + x, origin_y + y, origin_z + z));
+                          gen_block_col(seed, origin_x + x, origin_y + y, origin_z + z,
+                                        colh[z][x], colb[z][x]));
 }
 
 static void mesh_attribs(void) {
@@ -820,6 +1022,8 @@ static void mesh_attribs(void) {
     glEnableVertexAttribArray(5);
     glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, sizeof(mesh_vertex_t), (void *)(12 * sizeof(float)));
     glEnableVertexAttribArray(6);
+    glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, sizeof(mesh_vertex_t), (void *)(13 * sizeof(float)));
+    glEnableVertexAttribArray(7);
 }
 
 static void upload_chunk_mesh(chunk_node_t *n, const mesh_buf_t *mesh) {
@@ -1139,24 +1343,62 @@ static void place_veins_in_chunk(world_t *w, int cx, int cy, int cz) {
     }
 }
 
-static void stamp_tree(world_t *w, int wx, int wy, int wz) {
-    for (int i = 0; i < 4; i++) {
-        if (world_get_block(w, wx, wy + i, wz) == BLOCK_AIR) {
-            gen_write_keep_player(w, wx, wy + i, wz, BLOCK_WOOD);
+static void leaf_at(world_t *w, int x, int y, int z, block_t leaf) {
+    if (world_get_block(w, x, y, z) == BLOCK_AIR) gen_write_keep_player(w, x, y, z, leaf);
+}
+
+static void leaf_disc(world_t *w, int cx, int y, int cz, int r, int trim, block_t leaf) {
+    for (int dz = -r; dz <= r; dz++)
+        for (int dx = -r; dx <= r; dx++) {
+            if (dx * dx + dz * dz > r * r + trim) continue;
+            leaf_at(w, cx + dx, y, cz + dz, leaf);
         }
+}
+
+static void stamp_tree(world_t *w, int wx, int wy, int wz, block_t leaf, int kind) {
+    uint32_t rh = hash2(w->seed + SALT_TREE, wx * 13 + 1, wz * 13 + 1);
+    int trunk;
+    switch (kind) {
+        case 1: trunk = 6 + (int)(rh % 2u); break;
+        case 2: trunk = 4 + (int)(rh % 2u); break;
+        case 3: trunk = 4; break;
+        case 4: trunk = 7 + (int)(rh % 3u); break;
+        default: trunk = 4 + (int)(rh % 2u); break;
     }
-    for (int dy = 3; dy <= 5; dy++) {
-        int r = (dy <= 4) ? 2 : 1;
-        for (int dz = -r; dz <= r; dz++) {
-            for (int dx = -r; dx <= r; dx++) {
-                if (r == 2 && (dx == -r || dx == r) && (dz == -r || dz == r)) continue;
-                if (dx == 0 && dz == 0 && dy <= 3) continue;
-                int x = wx + dx, y = wy + dy, z = wz + dz;
-                if (world_get_block(w, x, y, z) == BLOCK_AIR) {
-                    gen_write_keep_player(w, x, y, z, BLOCK_LEAVES);
-                }
-            }
+    for (int i = 0; i < trunk; i++)
+        if (world_get_block(w, wx, wy + i, wz) == BLOCK_AIR)
+            gen_write_keep_player(w, wx, wy + i, wz, BLOCK_WOOD);
+    int top = wy + trunk;
+
+    if (kind == 1) {
+        for (int dy = 2; dy <= trunk; dy += 1) {
+            int r = (trunk - dy) / 2 + 1;
+            if (r > 2) r = 2;
+            leaf_disc(w, wx, wy + dy, wz, r, 0, leaf);
         }
+        leaf_at(w, wx, top, wz, leaf);
+        leaf_at(w, wx, top + 1, wz, leaf);
+    } else if (kind == 2) {
+        leaf_disc(w, wx, top - 1, wz, 3, 0, leaf);
+        leaf_disc(w, wx, top,     wz, 2, 0, leaf);
+    } else if (kind == 4) {
+        leaf_disc(w, wx, top - 3, wz, 3, 1, leaf);
+        leaf_disc(w, wx, top - 2, wz, 3, 1, leaf);
+        leaf_disc(w, wx, top - 1, wz, 2, 1, leaf);
+        leaf_disc(w, wx, top,     wz, 1, 0, leaf);
+        leaf_at(w, wx, top + 1, wz, leaf);
+    } else if (kind == 3) {
+        leaf_disc(w, wx, top - 1, wz, 3, 1, leaf);
+        leaf_disc(w, wx, top,     wz, 2, 0, leaf);
+        leaf_at(w, wx + 3, top - 2, wz, leaf);
+        leaf_at(w, wx - 3, top - 2, wz, leaf);
+        leaf_at(w, wx, top - 2, wz + 3, leaf);
+        leaf_at(w, wx, top - 2, wz - 3, leaf);
+    } else {
+        leaf_disc(w, wx, top - 2, wz, 2, -1, leaf);
+        leaf_disc(w, wx, top - 1, wz, 2, -1, leaf);
+        leaf_disc(w, wx, top,     wz, 1, 0, leaf);
+        leaf_at(w, wx, top + 1, wz, leaf);
     }
 }
 
@@ -1170,15 +1412,32 @@ static void place_trees_for_column(world_t *w, int cx, int cz) {
                     int x = x0 + lx;
                     int z = z0 + lz;
                     biome_t bm = world_biome_at(w->seed, x, z);
-                    int density = BIOMES[bm].tree_density;
-                    if (density <= 0) continue;
-                    uint32_t h = hash2(w->seed + SALT_TREE, x, z);
-                    if ((int)(h % 1000u) >= density) continue;
                     int gh = world_height_at(w->seed, x, z);
-                    if (gh < SEA_LEVEL) continue;
-                    if (gh + 5 >= WORLD_HEIGHT) continue;
-                    if (world_get_block(w, x, gh, z) != BIOMES[bm].surface) continue;
-                    stamp_tree(w, x, gh + 1, z);
+                    if (gh <= SEA_LEVEL + 1 || gh + 12 >= WORLD_HEIGHT) continue;
+
+                    int dsum = 0, dn = 0;
+                    for (int ddz = -16; ddz <= 16; ddz += 8)
+                        for (int ddx = -16; ddx <= 16; ddx += 8) {
+                            dsum += BIOMES[world_biome_at(w->seed, x + ddx, z + ddz)].tree_density;
+                            dn++;
+                        }
+                    int density = dsum / dn;
+
+                    uint32_t th = hash2(w->seed + SALT_TREE, x, z);
+                    if (density > 0 && (int)(th % 1000u) < density) {
+                        if (world_get_block(w, x, gh, z) == BIOMES[bm].surface)
+                            stamp_tree(w, x, gh + 1, z, BIOMES[bm].leaf, BIOMES[bm].tree_kind);
+                        continue;
+                    }
+
+                    int gd = BIOMES[bm].grass_density;
+                    if (gd > 0) {
+                        uint32_t grh = hash2(w->seed + SALT_GRASS, x, z);
+                        if ((int)(grh % 1000u) < gd &&
+                            world_get_block(w, x, gh, z) == BLOCK_GRASS &&
+                            world_get_block(w, x, gh + 1, z) == BLOCK_AIR)
+                            gen_write_keep_player(w, x, gh + 1, z, BLOCK_TALL_GRASS);
+                    }
                 }
             }
         }
@@ -1376,6 +1635,11 @@ world_t *world_create(uint32_t seed, int radius) {
     w->seed   = seed;
     w->radius = radius;
     w->sun_dx = 0.0f; w->sun_dy = 1.0f; w->sun_dz = 0.0f;
+    w->difficulty = 2; w->mob_spawning = 1; w->keep_inventory = 0; w->natural_regen = 1;
+    w->pvp = 1; w->fall_damage = 1; w->hunger_enabled = 1; w->daylight_cycle = 1;
+    w->mob_griefing = 1; w->weather_state = 3;
+    w->spawn_rate = 1.0f; w->smelt_mult = 1.0f;
+    w->dawn_time = 0.27f;
     world_start_workers(w);
     return w;
 }
@@ -1406,17 +1670,42 @@ void world_destroy(world_t *w) {
 }
 
 #define SAVE_MAGIC       0x444C5742u
-#define SAVE_VERSION     6u
+#define SAVE_VERSION     8u
 #define SAVE_VERSION_MIN 5u
 
 static int write_u32(FILE *f, uint32_t v)   { return fwrite(&v, 4, 1, f) == 1; }
 static int write_i32(FILE *f, int32_t v)    { return fwrite(&v, 4, 1, f) == 1; }
 static int write_f32(FILE *f, float v)      { return fwrite(&v, 4, 1, f) == 1; }
 static int write_u8 (FILE *f, uint8_t v)    { return fwrite(&v, 1, 1, f) == 1; }
+static int write_u16(FILE *f, uint16_t v)   { return fwrite(&v, 2, 1, f) == 1; }
+static int write_i16(FILE *f, int16_t v)    { return fwrite(&v, 2, 1, f) == 1; }
 static int read_u32 (FILE *f, uint32_t *v)  { return fread(v, 4, 1, f) == 1; }
 static int read_i32 (FILE *f, int32_t *v)   { return fread(v, 4, 1, f) == 1; }
 static int read_f32 (FILE *f, float *v)     { return fread(v, 4, 1, f) == 1; }
 static int read_u8  (FILE *f, uint8_t *v)   { return fread(v, 1, 1, f) == 1; }
+static int read_u16 (FILE *f, uint16_t *v)  { return fread(v, 2, 1, f) == 1; }
+static int read_i16 (FILE *f, int16_t *v)   { return fread(v, 2, 1, f) == 1; }
+
+static int write_slot(FILE *f, save_slot_t s) {
+    return write_u16(f, s.id) && write_i16(f, s.count) && write_u16(f, s.durability);
+}
+static int read_slot(FILE *f, save_slot_t *s) {
+    return read_u16(f, &s->id) && read_i16(f, &s->count) && read_u16(f, &s->durability);
+}
+
+static world_section_io_t g_entity_io  = { NULL, NULL };
+static world_section_io_t g_station_io = { NULL, NULL };
+static world_section_io_t g_players_io = { NULL, NULL };
+void world_set_entity_io(world_section_io_t io)  { g_entity_io = io; }
+void world_set_station_io(world_section_io_t io) { g_station_io = io; }
+void world_set_players_io(world_section_io_t io)  { g_players_io = io; }
+
+void world_foreach_edit(const world_t *w,
+                        void (*cb)(int x, int y, int z, block_t b, void *ud), void *ud) {
+    if (!w || !cb) return;
+    for (int i = 0; i < w->delta_count; i++)
+        cb(w->deltas[i].x, w->deltas[i].y, w->deltas[i].z, w->deltas[i].block, ud);
+}
 
 int world_save(const world_t *w, const save_player_t *p, const char *path) {
     FILE *f = fopen(path, "wb");
@@ -1428,6 +1717,21 @@ int world_save(const world_t *w, const save_player_t *p, const char *path) {
     ok &= (fwrite(w->name, 1, WORLD_NAME_MAX, f) == WORLD_NAME_MAX);
     ok &= write_i32(f, (int32_t)w->gamemode);
     ok &= write_i32(f, (int32_t)w->allow_commands);
+    ok &= write_u8(f, w->difficulty);
+    ok &= write_u8(f, w->mob_spawning);
+    ok &= write_u8(f, w->keep_inventory);
+    ok &= write_u8(f, w->natural_regen);
+    ok &= write_u8(f, w->pvp);
+    ok &= write_u8(f, w->fall_damage);
+    ok &= write_u8(f, w->hunger_enabled);
+    ok &= write_u8(f, w->daylight_cycle);
+    ok &= write_u8(f, w->mob_griefing);
+    ok &= write_u8(f, w->weather_state);
+    ok &= write_f32(f, w->spawn_rate);
+    ok &= write_f32(f, w->smelt_mult);
+    ok &= write_i32(f, w->spawn_x);
+    ok &= write_i32(f, w->spawn_y);
+    ok &= write_i32(f, w->spawn_z);
     ok &= write_f32(f, p->pos_x);
     ok &= write_f32(f, p->pos_y);
     ok &= write_f32(f, p->pos_z);
@@ -1461,14 +1765,50 @@ int world_save(const world_t *w, const save_player_t *p, const char *path) {
     }
 
     ok &= write_i32(f, (int32_t)p->hotbar_sel);
-    for (int i = 0; i < SAVE_HOTBAR_SLOTS && ok; i++) {
-        ok &= write_u8 (f, p->hotbar_block[i]);
-        ok &= write_i32(f, p->hotbar_count[i]);
+    for (int i = 0; i < SAVE_HOTBAR_SLOTS && ok; i++) ok &= write_slot(f, p->hotbar[i]);
+    for (int i = 0; i < SAVE_PACK_SLOTS && ok; i++)   ok &= write_slot(f, p->pack[i]);
+    for (int i = 0; i < SAVE_ARMOR_SLOTS && ok; i++)  ok &= write_slot(f, p->armor[i]);
+    ok &= write_slot(f, p->offhand);
+
+    ok &= write_i16(f, p->health);
+    ok &= write_i16(f, p->max_health);
+    ok &= write_f32(f, p->hunger);
+    ok &= write_f32(f, p->saturation);
+    ok &= write_f32(f, p->exhaustion);
+    ok &= write_i16(f, p->air);
+    ok &= write_i32(f, p->xp_total);
+    ok &= write_i32(f, p->xp_level);
+    ok &= write_u8 (f, p->is_dead);
+    ok &= write_i32(f, p->respawn_x);
+    ok &= write_i32(f, p->respawn_y);
+    ok &= write_i32(f, p->respawn_z);
+    ok &= write_u8 (f, p->has_respawn);
+    {
+        uint8_t ne = p->effect_count > SAVE_EFFECTS_MAX ? SAVE_EFFECTS_MAX : p->effect_count;
+        ok &= write_u8(f, ne);
+        for (int i = 0; i < ne && ok; i++) {
+            ok &= write_u8 (f, p->effects[i].id);
+            ok &= write_i32(f, p->effects[i].ticks);
+            ok &= write_u8 (f, p->effects[i].amp);
+        }
     }
-    for (int i = 0; i < SAVE_PACK_SLOTS && ok; i++) {
-        ok &= write_u8 (f, p->pack_block[i]);
-        ok &= write_i32(f, p->pack_count[i]);
+
+    if (g_entity_io.save) ok &= g_entity_io.save(f); else ok &= write_u32(f, 0u);
+    if (g_station_io.save) ok &= g_station_io.save(f); else ok &= write_u32(f, 0u);
+    ok &= write_u32(f, p->achievements);
+
+    ok &= write_f32(f, w->dawn_time);
+    {
+        uint32_t nu = 0;
+        for (int i = 0; i < WORLD_MAX_USERS; i++) if (w->users[i].used) nu++;
+        ok &= write_u32(f, nu);
+        for (int i = 0; i < WORLD_MAX_USERS && ok; i++) {
+            if (!w->users[i].used) continue;
+            ok &= (fwrite(w->users[i].name, 1, USER_NAME_MAX, f) == USER_NAME_MAX);
+            ok &= write_u32(f, w->users[i].allow_mask);
+        }
     }
+    if (g_players_io.save) ok &= g_players_io.save(f); else ok &= write_u32(f, 0u);
 
     fclose(f);
     if (!ok) {
@@ -1492,9 +1832,35 @@ int world_load_into(world_t *w, save_player_t *p, const char *path) {
     ok &= read_u32(f, &magic);
     ok &= read_u32(f, &version);
     ok &= read_u32(f, &seed);
+    if (!ok || magic != SAVE_MAGIC || version < SAVE_VERSION_MIN || version > SAVE_VERSION) {
+        fprintf(stderr, "world_load: bad header/version in '%s'\n", path);
+        fclose(f);
+        return 0;
+    }
+    if (seed != w->seed) {
+        fprintf(stderr,
+                "world_load: save seed (%u) ≠ current world seed (%u); ignoring save\n",
+                seed, w->seed);
+        fclose(f);
+        return 0;
+    }
     ok &= (fread(nm, 1, WORLD_NAME_MAX, f) == WORLD_NAME_MAX);
     ok &= read_i32(f, &gm);
     ok &= read_i32(f, &ac);
+    if (ok && version >= 7) {
+        uint8_t s[10];
+        for (int i = 0; i < 10 && ok; i++) ok &= read_u8(f, &s[i]);
+        float sr = 1.0f, sm = 1.0f; int32_t spx = 0, spy = 0, spz = 0;
+        ok &= read_f32(f, &sr); ok &= read_f32(f, &sm);
+        ok &= read_i32(f, &spx); ok &= read_i32(f, &spy); ok &= read_i32(f, &spz);
+        if (ok) {
+            w->difficulty = s[0]; w->mob_spawning = s[1]; w->keep_inventory = s[2];
+            w->natural_regen = s[3]; w->pvp = s[4]; w->fall_damage = s[5];
+            w->hunger_enabled = s[6]; w->daylight_cycle = s[7]; w->mob_griefing = s[8];
+            w->weather_state = s[9];
+            w->spawn_rate = sr; w->smelt_mult = sm; w->spawn_x = spx; w->spawn_y = spy; w->spawn_z = spz;
+        }
+    }
     ok &= read_f32(f, &p->pos_x);
     ok &= read_f32(f, &p->pos_y);
     ok &= read_f32(f, &p->pos_z);
@@ -1504,20 +1870,8 @@ int world_load_into(world_t *w, save_player_t *p, const char *path) {
     ok &= read_u8 (f, &sel);
     ok &= read_f32(f, &p->world_time);
     ok &= read_u32(f, &count);
-    if (!ok || magic != SAVE_MAGIC) {
-        fprintf(stderr, "world_load: bad header in '%s'\n", path);
-        fclose(f);
-        return 0;
-    }
-    if (version < SAVE_VERSION_MIN || version > SAVE_VERSION) {
-        fprintf(stderr, "world_load: unsupported version %u in '%s'\n", version, path);
-        fclose(f);
-        return 0;
-    }
-    if (seed != w->seed) {
-        fprintf(stderr,
-                "world_load: save seed (%u) ≠ current world seed (%u); ignoring save\n",
-                seed, w->seed);
+    if (!ok) {
+        fprintf(stderr, "world_load: truncated header in '%s'\n", path);
         fclose(f);
         return 0;
     }
@@ -1555,28 +1909,102 @@ int world_load_into(world_t *w, save_player_t *p, const char *path) {
         chunk_node_t *loaded = find_chunk(w, ocx, ocy, ocz);
         if (loaded) loaded->data = *snap;
     }
-
-    p->has_inventory = 0;
-    if (ok && version >= 6) {
-        int32_t hs = 0;
-        ok &= read_i32(f, &hs);
-        p->hotbar_sel = (int)hs;
-        for (int i = 0; i < SAVE_HOTBAR_SLOTS && ok; i++) {
-            ok &= read_u8 (f, &p->hotbar_block[i]);
-            ok &= read_i32(f, &p->hotbar_count[i]);
-        }
-        for (int i = 0; i < SAVE_PACK_SLOTS && ok; i++) {
-            ok &= read_u8 (f, &p->pack_block[i]);
-            ok &= read_i32(f, &p->pack_count[i]);
-        }
-        if (ok) p->has_inventory = 1;
-    }
-
-    fclose(f);
     if (!ok) {
-        fprintf(stderr, "world_load: truncated delta/overlay stream in '%s'\n", path);
+        fprintf(stderr, "world_load: truncated terrain stream in '%s'\n", path);
+        fclose(f);
         return 0;
     }
+
+    p->has_inventory = 0;
+    p->has_survival  = 0;
+    int tail = 1;
+    if (version >= 7) {
+        int32_t hs = 0;
+        tail &= read_i32(f, &hs);
+        p->hotbar_sel = (int)hs;
+        for (int i = 0; i < SAVE_HOTBAR_SLOTS && tail; i++) tail &= read_slot(f, &p->hotbar[i]);
+        for (int i = 0; i < SAVE_PACK_SLOTS && tail; i++)   tail &= read_slot(f, &p->pack[i]);
+        for (int i = 0; i < SAVE_ARMOR_SLOTS && tail; i++)  tail &= read_slot(f, &p->armor[i]);
+        tail &= read_slot(f, &p->offhand);
+        if (tail) p->has_inventory = 1;
+        if (tail) {
+            tail &= read_i16(f, &p->health);
+            tail &= read_i16(f, &p->max_health);
+            tail &= read_f32(f, &p->hunger);
+            tail &= read_f32(f, &p->saturation);
+            tail &= read_f32(f, &p->exhaustion);
+            tail &= read_i16(f, &p->air);
+            tail &= read_i32(f, &p->xp_total);
+            tail &= read_i32(f, &p->xp_level);
+            tail &= read_u8 (f, &p->is_dead);
+            tail &= read_i32(f, &p->respawn_x);
+            tail &= read_i32(f, &p->respawn_y);
+            tail &= read_i32(f, &p->respawn_z);
+            tail &= read_u8 (f, &p->has_respawn);
+            uint8_t ne = 0;
+            tail &= read_u8(f, &ne);
+            if (ne > SAVE_EFFECTS_MAX) ne = SAVE_EFFECTS_MAX;
+            p->effect_count = ne;
+            for (int i = 0; i < ne && tail; i++) {
+                tail &= read_u8 (f, &p->effects[i].id);
+                tail &= read_i32(f, &p->effects[i].ticks);
+                tail &= read_u8 (f, &p->effects[i].amp);
+            }
+            if (tail) p->has_survival = 1;
+        }
+        if (tail) {
+            if (g_entity_io.load) tail &= g_entity_io.load(f, version);
+            else { uint32_t c = 0; tail &= read_u32(f, &c); }
+        }
+        if (tail) {
+            if (g_station_io.load) tail &= g_station_io.load(f, version);
+            else { uint32_t c = 0; tail &= read_u32(f, &c); }
+        }
+        if (tail) { uint32_t a = 0; if (read_u32(f, &a)) p->achievements = a; }
+        if (tail && version >= 8) {
+            float dt = 0.27f;
+            tail &= read_f32(f, &dt);
+            if (tail) w->dawn_time = dt;
+            uint32_t nu = 0;
+            if (tail) tail &= read_u32(f, &nu);
+            for (uint32_t i = 0; i < nu && tail; i++) {
+                char unm[USER_NAME_MAX]; uint32_t mask = 0;
+                tail &= (fread(unm, 1, USER_NAME_MAX, f) == USER_NAME_MAX);
+                tail &= read_u32(f, &mask);
+                if (tail && i < WORLD_MAX_USERS) {
+                    memcpy(w->users[i].name, unm, USER_NAME_MAX);
+                    w->users[i].allow_mask = mask;
+                    w->users[i].used = 1;
+                }
+            }
+            if (tail) {
+                if (g_players_io.load) tail &= g_players_io.load(f, version);
+                else { uint32_t c = 0; tail &= read_u32(f, &c); }
+            }
+        }
+    } else if (version == 6) {
+        int32_t hs = 0;
+        tail &= read_i32(f, &hs);
+        p->hotbar_sel = (int)hs;
+        for (int i = 0; i < SAVE_HOTBAR_SLOTS && tail; i++) {
+            uint8_t id = 0; int32_t cnt = 0;
+            tail &= read_u8(f, &id); tail &= read_i32(f, &cnt);
+            p->hotbar[i].id = id;
+            p->hotbar[i].count = (int16_t)(cnt < 0 ? 0 : (cnt > 32767 ? 32767 : cnt));
+            p->hotbar[i].durability = 0;
+        }
+        for (int i = 0; i < SAVE_PACK_SLOTS && tail; i++) {
+            uint8_t id = 0; int32_t cnt = 0;
+            tail &= read_u8(f, &id); tail &= read_i32(f, &cnt);
+            p->pack[i].id = id;
+            p->pack[i].count = (int16_t)(cnt < 0 ? 0 : (cnt > 32767 ? 32767 : cnt));
+            p->pack[i].durability = 0;
+        }
+        if (tail) p->has_inventory = 1;
+    }
+    if (!tail) fprintf(stderr, "world_load: save tail truncated in '%s' (kept terrain+inventory)\n", path);
+
+    fclose(f);
 
     for (int i = 0; i < WORLD_BUCKETS; i++) {
         for (chunk_node_t *n = w->buckets[i]; n; n = n->next) {
@@ -1601,6 +2029,25 @@ int world_peek_meta(const char *path, world_meta_t *out) {
     ok &= (fread(out->name, 1, WORLD_NAME_MAX, f) == WORLD_NAME_MAX);
     ok &= read_i32(f, &gm);
     ok &= read_i32(f, &ac);
+    out->difficulty = 2; out->mob_spawning = 1; out->keep_inventory = 0; out->natural_regen = 1;
+    out->pvp = 1; out->fall_damage = 1; out->hunger_enabled = 1; out->daylight_cycle = 1;
+    out->mob_griefing = 1; out->weather_state = 3; out->spawn_rate = 1.0f; out->smelt_mult = 1.0f;
+    out->dawn_time = 0.27f;
+    out->spawn_x = 0; out->spawn_y = 0; out->spawn_z = 0;
+    if (ok && version >= 7) {
+        uint8_t s[10];
+        for (int i = 0; i < 10 && ok; i++) ok &= read_u8(f, &s[i]);
+        float sr = 1.0f, sm = 1.0f; int32_t spx = 0, spy = 0, spz = 0;
+        ok &= read_f32(f, &sr); ok &= read_f32(f, &sm);
+        ok &= read_i32(f, &spx); ok &= read_i32(f, &spy); ok &= read_i32(f, &spz);
+        if (ok) {
+            out->difficulty = s[0]; out->mob_spawning = s[1]; out->keep_inventory = s[2];
+            out->natural_regen = s[3]; out->pvp = s[4]; out->fall_damage = s[5];
+            out->hunger_enabled = s[6]; out->daylight_cycle = s[7]; out->mob_griefing = s[8];
+            out->weather_state = s[9];
+            out->spawn_rate = sr; out->smelt_mult = sm; out->spawn_x = spx; out->spawn_y = spy; out->spawn_z = spz;
+        }
+    }
     fclose(f);
     if (!ok || magic != SAVE_MAGIC || version < SAVE_VERSION_MIN || version > SAVE_VERSION) return 0;
     out->name[WORLD_NAME_MAX - 1] = '\0';

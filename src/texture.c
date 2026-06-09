@@ -321,7 +321,7 @@ static void tile_diamond_ore(uint8_t *atlas, int tx, int ty) {
     }
 }
 
-static unsigned int upload_rgba(const uint8_t *data, int w, int h) {
+unsigned int texture_upload_rgba(const uint8_t *data, int w, int h) {
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -381,6 +381,29 @@ static void tile_glass(uint8_t *atlas, int tx, int ty) {
     }
 }
 
+static void tile_ice(uint8_t *atlas, int tx, int ty) {
+    fill_tile(atlas, tx, ty, 168, 200, 232, 8);
+    for (int i = 0; i < 6; i++) {
+        int x0 = rand() % ATLAS_TILE_PX;
+        int y0 = rand() % (ATLAS_TILE_PX - 4);
+        int len = 3 + rand() % 6;
+        for (int d = 0; d < len; d++) {
+            int yy = y0 + d;
+            int xx = x0 + (d % 2 == 0 ? 0 : 1);
+            put_px(atlas, tx, ty, xx, yy, 150, 184, 218);
+        }
+    }
+    for (int p = 0; p < ATLAS_TILE_PX; p++) {
+        put_px(atlas, tx, ty, p, 0, 200, 224, 244);
+        put_px(atlas, tx, ty, 0, p, 200, 224, 244);
+    }
+    for (int i = 0; i < 5; i++) {
+        int px = 2 + rand() % (ATLAS_TILE_PX - 4);
+        int py = 2 + rand() % (ATLAS_TILE_PX - 4);
+        put_px(atlas, tx, ty, px, py, 226, 240, 252);
+    }
+}
+
 static unsigned int create_procedural_atlas(void) {
     size_t bytes = (size_t)ATLAS_SIZE_PX * ATLAS_SIZE_PX * 4;
     uint8_t *atlas = malloc(bytes);
@@ -410,8 +433,11 @@ static unsigned int create_procedural_atlas(void) {
     tile_quartz(atlas,       4, 2);
     tile_concrete(atlas,     4, 3);
     tile_glass(atlas,        0, 4);
+    tile_ice(atlas,          1, 4);
 
-    unsigned int tex = upload_rgba(atlas, ATLAS_SIZE_PX, ATLAS_SIZE_PX);
+    texture_paint_extra_blocks(atlas);
+
+    unsigned int tex = texture_upload_rgba(atlas, ATLAS_SIZE_PX, ATLAS_SIZE_PX);
     free(atlas);
     return tex;
 }
@@ -429,7 +455,7 @@ static unsigned int load_atlas_from_file(const char *path) {
         free(data);
         return 0;
     }
-    unsigned int tex = upload_rgba(data, w, h);
+    unsigned int tex = texture_upload_rgba(data, w, h);
     free(data);
     return tex;
 }

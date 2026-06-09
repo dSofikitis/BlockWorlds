@@ -1,0 +1,25 @@
+#pragma once
+
+#include <stdint.h>
+
+#define MAX_STATUS_EFFECTS 8
+#define PLAYER_MAX_HEALTH  20.0f
+#define PLAYER_MAX_HUNGER  20
+#define PLAYER_MAX_AIR     300
+#define TICKS_PER_SEC      20.0f
+
+typedef enum {
+    EFFECT_NONE = 0, EFFECT_REGENERATION, EFFECT_POISON, EFFECT_STRENGTH, EFFECT_WEAKNESS,
+    EFFECT_SPEED, EFFECT_SLOWNESS, EFFECT_RESISTANCE, EFFECT_FIRE_RESISTANCE,
+    EFFECT_WATER_BREATHING, EFFECT_HUNGER, EFFECT_INSTANT_HEALTH, EFFECT_INSTANT_DAMAGE,
+    EFFECT_COUNT
+} effect_id_t;
+
+typedef struct { uint8_t id; uint8_t amplifier; uint16_t ticks_remaining; } status_effect_t;
+
+typedef enum {
+    DMG_GENERIC = 0, DMG_MOB_MELEE, DMG_ARROW, DMG_EXPLOSION, DMG_FALL, DMG_DROWN,
+    DMG_SUFFOCATE, DMG_VOID, DMG_FIRE, DMG_STARVE, DMG_PLAYER, DMG_MAGIC
+} damage_type_t;
+
+typedef enum { DIFF_PEACEFUL, DIFF_EASY, DIFF_NORMAL, DIFF_HARD } difficulty_t;

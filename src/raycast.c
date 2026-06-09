@@ -4,7 +4,7 @@
 #include <math.h>
 
 static int block_is_solid_for_raycast(block_t b) {
-    return b != BLOCK_AIR && b != BLOCK_WATER;
+    return b != BLOCK_AIR && !block_is_water(b);
 }
 
 static int floorf_to_int(float v) { return (int)floorf(v); }
